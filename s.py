@@ -1,553 +1,437 @@
-// Make this function accessible to client-side code
-function doGet(e) {
-  Logger.log('Query parameters:', e.parameter);
-  
-  if (e.parameter.page === 'redeem') {
-    var template = HtmlService.createTemplateFromFile('Redeem');
-    template.passUrl = e.parameter.passUrl;
-    template.walletUrl = e.parameter.walletUrl?.replace('http://', 'https://'); // Force HTTPS
-    
-    return template.evaluate()
-      .setTitle('Redeem Coupon')
-      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
-  }
-  
-  return HtmlService.createHtmlOutputFromFile('Index')
-    .setTitle('Coupon Generator')
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
-}
-// Add this new function for combined authentication and redemption
-function redeemCouponWithAuth(passUrl, credentials) {
-  try {
-    Logger.log('Attempting to authenticate and redeem coupon');
-    
-    const spreadsheetId = '1Pb0XyrfEwKsdFonezPrpGjWjEive-8g6qvRsQcOMLlU';
-    const sheet = SpreadsheetApp.openById(spreadsheetId).getActiveSheet();
-    const data = sheet.getDataRange().getValues();
-    
-    // Get the indices of the auth columns (last two columns)
-    const authorizedEmailColIndex = data[0].length - 2;  // Second to last column
-    const authorizedPasswordColIndex = data[0].length - 1;  // Last column
-    
-    // Find row with matching email and password
-    const authRow = data.find(row => 
-      row[authorizedEmailColIndex]?.toLowerCase() === credentials.email.toLowerCase() &&
-      row[authorizedPasswordColIndex] === credentials.password
-    );
-    
-    if (!authRow) {
-      return {
-        success: false,
-        error: 'Invalid email or password'
-      };
-    }
-    
-    // Proceed with coupon redemption
-    const rowIndex = data.findIndex(row => {
-      const storedUrl = String(row[0]).trim();
-      const searchUrl = String(passUrl).trim();
-      return storedUrl === searchUrl;
-    });
-    
-    if (rowIndex === -1) {
-      return { 
-        success: false, 
-        error: 'Coupon not found in database'
-      };
-    }
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms, models
+import random
+import os
+import zipfile
+from PIL import Image
+import matplotlib.pyplot as plt
 
-    const row = data[rowIndex];
-    const expiryDate = new Date(row[3]);
-    const today = new Date();
-    
-    if (expiryDate < today) {
-      return { success: false, error: 'Coupon has expired' };
-    }
+class FeatureExtractor(nn.Module):
+    def __init__(self, channels=1):
+        super(FeatureExtractor, self).__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(channels, 64, 3, 1, 1),
+            nn.InstanceNorm2d(64),
+            nn.ReLU(True),
+            nn.Conv2d(64, 128, 3, 2, 1),
+            nn.InstanceNorm2d(128),
+            nn.ReLU(True),
+            nn.Conv2d(128, 256, 3, 2, 1),
+            nn.InstanceNorm2d(256),
+            nn.ReLU(True)
+        )
 
-    if (row[6] === 'Inactive') {
-      return { success: false, error: 'Coupon is no longer active' };
-    }
+    def forward(self, x):
+        return self.features(x)
 
-    const uses = row[4];
-    let remainingUses = row[5];
+class CatalystSegmentation(nn.Module):
+    def __init__(self, in_channels=1):
+        super(CatalystSegmentation, self).__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv2d(in_channels, 64, 3, padding=1),
+            nn.InstanceNorm2d(64),
+            nn.ReLU(True),
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.InstanceNorm2d(128),
+            nn.ReLU(True)
+        )
+        self.decoder = nn.Sequential(
+            nn.Conv2d(128, 64, 3, padding=1),
+            nn.InstanceNorm2d(64),
+            nn.ReLU(True),
+            nn.Conv2d(64, 1, 1),
+            nn.Sigmoid()
+        )
 
-    if (uses === 'unlimited') {
-      return { success: true, message: 'Coupon redeemed successfully' };
-    }
+    def forward(self, x):
+        features = self.encoder(x)
+        mask = self.decoder(features)
+        return mask, features
 
-    if (remainingUses <= 0) {
-      return { success: false, error: 'No remaining uses for this coupon' };
-    }
+class AttentionBlock(nn.Module):
+    def __init__(self, dim):
+        super(AttentionBlock, self).__init__()
+        self.attention = nn.Sequential(
+            nn.Conv2d(dim, dim, 1),
+            nn.Softmax(dim=-1)
+        )
+        self.conv_block = nn.Sequential(
+            nn.Conv2d(dim, dim, 3, 1, 1),
+            nn.InstanceNorm2d(dim),
+            nn.ReLU(True),
+            nn.Conv2d(dim, dim, 3, 1, 1),
+            nn.InstanceNorm2d(dim)
+        )
 
-    remainingUses--;
-    sheet.getRange(rowIndex + 1, 6).setValue(remainingUses);
+    def forward(self, x):
+        attention = self.attention(x)
+        return x + attention * self.conv_block(x)
 
-    if (remainingUses === 0) {
-      sheet.getRange(rowIndex + 1, 7).setValue('Inactive');
-    }
+class EnhancedGenerator(nn.Module):
+    def __init__(self, channels=1):
+        super(EnhancedGenerator, self).__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv2d(channels, 64, 7, 1, 3),
+            nn.InstanceNorm2d(64),
+            nn.ReLU(True),
+            nn.Conv2d(64, 128, 3, 2, 1),
+            nn.InstanceNorm2d(128),
+            nn.ReLU(True),
+            nn.Conv2d(128, 256, 3, 2, 1),
+            nn.InstanceNorm2d(256),
+            nn.ReLU(True)
+        )
+        self.transformer = nn.Sequential(
+            AttentionBlock(256),
+            AttentionBlock(256),
+            AttentionBlock(256)
+        )
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(256, 128, 3, 2, 1, output_padding=1),
+            nn.InstanceNorm2d(128),
+            nn.ReLU(True),
+            nn.ConvTranspose2d(128, 64, 3, 2, 1, output_padding=1),
+            nn.InstanceNorm2d(64),
+            nn.ReLU(True),
+            nn.Conv2d(64, channels, 7, 1, 3),
+            nn.Tanh()
+        )
+        self.segmentation = CatalystSegmentation()
 
-    return { 
-      success: true, 
-      message: 'Coupon redeemed successfully',
-      remainingUses: remainingUses
-    };
-
-  } catch (error) {
-    Logger.log('Error in redemption process: ' + error.toString());
-    return { success: false, error: error.toString() };
-  }
-}
-// This function must be global for client access
-// function redeemCoupon(passUrl) {
-//   try {
-//     Logger.log('Attempting to redeem coupon with URL: ' + passUrl);
-    
-//     const spreadsheetId = '1Pb0XyrfEwKsdFonezPrpGjWjEive-8g6qvRsQcOMLlU';
-//     const sheet = SpreadsheetApp.openById(spreadsheetId).getActiveSheet();
-    
-//     const data = sheet.getDataRange().getValues();
-    
-//     Logger.log('First few rows of data:');
-//     for (let i = 0; i < Math.min(3, data.length); i++) {
-//       Logger.log(`Row ${i}: URL = ${data[i][0]}`);
-//     }
-    
-//     const rowIndex = data.findIndex(row => {
-//       const storedUrl = String(row[0]).trim();
-//       const searchUrl = String(passUrl).trim();
-      
-//       Logger.log('Comparing:');
-//       Logger.log('Stored URL: ' + storedUrl);
-//       Logger.log('Search URL: ' + searchUrl);
-      
-//       return storedUrl === searchUrl;
-//     });
-    
-//     Logger.log('Found row index: ' + rowIndex);
-    
-//     if (rowIndex === -1) {
-//       return { 
-//         success: false, 
-//         error: 'Coupon not found in database'
-//       };
-//     }
-
-//     const row = data[rowIndex];
-//     const expiryDate = new Date(row[3]);
-//     const today = new Date();
-    
-//     if (expiryDate < today) {
-//       return { success: false, error: 'Coupon has expired' };
-//     }
-
-//     if (row[6] === 'Inactive') {
-//       return { success: false, error: 'Coupon is no longer active' };
-//     }
-
-//     const uses = row[4];
-//     let remainingUses = row[5];
-
-//     if (uses === 'unlimited') {
-//       return { success: true, message: 'Coupon redeemed successfully' };
-//     }
-
-//     if (remainingUses <= 0) {
-//       return { success: false, error: 'No remaining uses for this coupon' };
-//     }
-
-//     remainingUses--;
-//     sheet.getRange(rowIndex + 1, 6).setValue(remainingUses);
-
-//     if (remainingUses === 0) {
-//       sheet.getRange(rowIndex + 1, 7).setValue('Inactive');
-//     }
-
-//     return { 
-//       success: true, 
-//       message: 'Coupon redeemed successfully',
-//       remainingUses: remainingUses
-//     };
-
-//   } catch (error) {
-//     Logger.log('Error redeeming coupon: ' + error.toString());
-//     return { success: false, error: error.toString() };
-//   }
-// }
-function generateCoupon(formData) {
-  try {
-    // Add debug logging for incoming date
-    Logger.log('Incoming expiry date from form:', formData.expiryDate);
-    
-    const originalDate = new Date(formData.expiryDate);
-    Logger.log('Original date object:', originalDate.toISOString());
-    
-    const adjustedDate = new Date(originalDate);
-    adjustedDate.setDate(adjustedDate.getDate() + 1);
-    Logger.log('Adjusted date object:', adjustedDate.toISOString());
-    
-    // Log what we're actually sending to API
-    const dateForAPI = adjustedDate.toISOString().split('T')[0];
-    Logger.log('Date being sent to API:', dateForAPI);
-
-    const apiPayload = {
-      serviceType: formData.serviceType,
-      discount: parseInt(formData.discount),
-      expiryDate: dateForAPI
-    };
-
-    Logger.log('Full API payload:', JSON.stringify(apiPayload));
-
-    const options = {
-      'method': 'post',
-      'contentType': 'application/json',
-      'payload': JSON.stringify(apiPayload),
-      'muteHttpExceptions': true
-    };
-
-    let response;
-    let attempts = 0;
-    const maxAttempts = 5;
-    const retryDelay = 2000;
-
-    while (attempts < maxAttempts) {
-      response = UrlFetchApp.fetch('https://passapi.onrender.com/generate-pass', options);
-      const responseCode = response.getResponseCode();
-      
-      // Log the API response
-      Logger.log('API Response Code:', responseCode);
-      Logger.log('API Response Body:', response.getContentText());
-      
-      if (responseCode === 200) {
-        break;
-      } else if (responseCode === 502 && attempts < maxAttempts - 1) {
-        Utilities.sleep(retryDelay);
-        attempts++;
-        continue;
-      } else {
-        throw new Error(`API returned status code: ${responseCode}`);
-      }
-    }
-
-    const responseData = JSON.parse(response.getContentText());
-    
-    if (responseData.success && responseData.passUrl) {
-      const scriptUrl = ScriptApp.getService().getUrl();
-      const securePassUrl = responseData.passUrl.replace('http://', 'https://');
-      const redeemUrl = `${scriptUrl}?page=redeem&passUrl=${encodeURIComponent(securePassUrl)}&walletUrl=${encodeURIComponent(securePassUrl)}`;
-      
-      // Use original expiry date for spreadsheet
-      formData.expiryDate = originalDate.toISOString().split('T')[0];
-      
-      updateCouponSheet(securePassUrl, formData);
-      
-      return {
-        success: true,
-        passUrl: securePassUrl,
-        redeemUrl: redeemUrl
-      };
-    } else {
-      throw new Error('Invalid response format from server');
-    }
-
-  } catch (error) {
-    Logger.log('Error in generateCoupon: ' + error.toString());
-    return {
-      success: false,
-      error: error.toString()
-    };
-  }
-}
-// function generateCoupon(formData) {
-//   try {
-//     // Add one day to the expiry date
-//     const originalDate = new Date(formData.expiryDate);
-//     const adjustedDate = new Date(originalDate);
-//     adjustedDate.setDate(adjustedDate.getDate() + 2);
-    
-//     const apiPayload = {
-//       serviceType: formData.serviceType,
-//       discount: parseInt(formData.discount),
-//       expiryDate: adjustedDate.toISOString().split('T')[0] // Format as YYYY-MM-DD
-//     };
-
-//     const options = {
-//       'method': 'post',
-//       'contentType': 'application/json',
-//       'payload': JSON.stringify(apiPayload),
-//       'muteHttpExceptions': true
-//     };
-
-//     let response;
-//     let attempts = 0;
-//     const maxAttempts = 5;
-//     const retryDelay = 2000;
-
-//     while (attempts < maxAttempts) {
-//       response = UrlFetchApp.fetch('https://passapi.onrender.com/generate-pass', options);
-//       const responseCode = response.getResponseCode();
-      
-//       if (responseCode === 200) {
-//         break;
-//       } else if (responseCode === 502 && attempts < maxAttempts - 1) {
-//         Utilities.sleep(retryDelay);
-//         attempts++;
-//         continue;
-//       } else {
-//         throw new Error(`API returned status code: ${responseCode}`);
-//       }
-//     }
-
-//     const responseData = JSON.parse(response.getContentText());
-    
-//     if (responseData.success && responseData.passUrl) {
-//       const scriptUrl = ScriptApp.getService().getUrl();
-      
-//       // Force HTTPS for the passUrl
-//       const securePassUrl = responseData.passUrl.replace('http://', 'https://');
-      
-//       // Create URLs for QR code with HTTPS
-//       const redeemUrl = `${scriptUrl}?page=redeem&passUrl=${encodeURIComponent(securePassUrl)}&walletUrl=${encodeURIComponent(securePassUrl)}`;
-      
-//       Logger.log('Generated redeem URL: ' + redeemUrl);
-      
-//       // Use original expiry date when updating spreadsheet
-//       formData.expiryDate = originalDate.toISOString().split('T')[0];
-      
-//       // Update spreadsheet with the HTTPS URL
-//       updateCouponSheet(securePassUrl, formData);
-      
-//       return {
-//         success: true,
-//         passUrl: securePassUrl,
-//         redeemUrl: redeemUrl
-//       };
-//     } else {
-//       throw new Error('Invalid response format from server');
-//     }
-
-//   } catch (error) {
-//     Logger.log('Error in generateCoupon: ' + error.toString());
-//     return {
-//       success: false,
-//       error: error.toString()
-//     };
-//   }
-// }
-function updateCouponSheet(couponUrl, formData) {
-  try {
-    const spreadsheetId = '1Pb0XyrfEwKsdFonezPrpGjWjEive-8g6qvRsQcOMLlU';
-    const sheet = SpreadsheetApp.openById(spreadsheetId).getActiveSheet();
-    
-    const today = new Date();
-    const expiryDate = new Date(formData.expiryDate);
-    const status = expiryDate < today ? 'Inactive' : 'Active';
-    
-    // const rowData = [
-    //   couponUrl,
-    //   formData.serviceType,
-    //   formData.discount,
-    //   formData.expiryDate,
-    //   formData.uses,
-    //   formData.uses,
-    //   status
-    // ];
-    const rowData = [
-      couponUrl,
-      formData.serviceType,
-      formData.discount,
-      formData.expiryDate,
-      formData.uses,
-      formData.uses,
-      status,
-      formData.email,
-      formData.phone
-    ];
-    
-    sheet.appendRow(rowData);
-    Logger.log('Successfully updated spreadsheet with coupon data');
-    
-  } catch (error) {
-    Logger.log('Error updating spreadsheet: ' + error.toString());
-    throw error;
-  }
-}
-// function sendEmailShare(email, walletUrl) {
-//   try {
-//     const subject = 'Your Digital Coupon';
-//     const body = `Here's your digital coupon! Click the link below to add it to your wallet:\n\n${walletUrl}`;
-    
-//     MailApp.sendEmail(email, subject, body);
-    
-//     return { success: true };
-//   } catch (error) {
-//     Logger.log('Error sending email: ' + error.toString());
-//     return { success: false, error: error.toString() };
-//   }
-// }
-function sendEmailShare(email, walletUrl) {
-  try {
-    const subject = 'Your Digital Coupon';
-    const body = `Here's your digital coupon! Click the link below to add it to your wallet:\n\n${walletUrl}`;
-    
-    MailApp.sendEmail({
-      to: email,
-      subject: subject,
-      body: body
-    });
-    
-    return { success: true };
-  } catch (error) {
-    Logger.log('Error sending email: ' + error.toString());
-    return { success: false, error: error.toString() };
-  }
-}
-function sendSMSShare(phone, walletUrl) {
-  try {
-    const cleanPhone = phone.replace(/\D/g, '');
-    
-const carriers = {
-  'verizon': `${cleanPhone}@vtext.com`,
-  'att': `${cleanPhone}@txt.att.net`,
-  'tmobile': `${cleanPhone}@tmomail.net`,
-  // 'sprint': `${cleanPhone}@messaging.sprintpcs.com`,
-  // 'lycamobile': `${cleanPhone}@lycamobile.com`,   
-  'boost': `${cleanPhone}@sms.myboostmobile.com`,
-  // 'cricket': `${cleanPhone}@sms.cricketwireless.net`,
-  'uscellular': `${cleanPhone}@email.uscc.net`,
-  // 'metro': `${cleanPhone}@mymetropcs.com`,
-  // 'virgin': `${cleanPhone}@vmobl.com`,
-  // 'xfinity': `${cleanPhone}@vtext.com`,
-  'googlefi': `${cleanPhone}@msg.fi.google.com`,
-  // 'republic': `${cleanPhone}@text.republicwireless.com`,
-  // 'straighttalk': `${cleanPhone}@vtext.com`,
-  // 'consumercellular': `${cleanPhone}@mailmymobile.net`,
-  // 'tracfone': `${cleanPhone}@mmst5.tracfone.com`,
-  // 'alltell': `${cleanPhone}@message.alltel.com`,
-  // 'simple': `${cleanPhone}@smtext.com`,
-  // 'rogers': `${cleanPhone}@pcs.rogers.com`,
-  // 'bell': `${cleanPhone}@txt.bell.ca`,
-  // 'telus': `${cleanPhone}@msg.telus.com`,
-  // 'h2o': `${cleanPhone}@txt.att.net`,
-  // 'mint': `${cleanPhone}@tmomail.net`,
-  // 'net10': `${cleanPhone}@vtext.com`
-};
-
-    
-    const message = `Here's your digital coupon! Click to add to wallet: ${walletUrl}`;
-    
-    for (const carrier in carriers) {
-      MailApp.sendEmail({
-        to: carriers[carrier],
-        subject: 'Apple wallet Coupon',
-        body: message
-      });
-    }
-    
-    return { success: true };
-  } catch (error) {
-    Logger.log('Error sending SMS: ' + error.toString());
-    return { success: false, error: error.toString() };
-  }
-}
-// Function to send reminder and check current status
-function sendExpiryReminder() {
-  try {
-    const spreadsheetId = '1Pb0XyrfEwKsdFonezPrpGjWjEive-8g6qvRsQcOMLlU';
-    const sheet = SpreadsheetApp.openById(spreadsheetId).getActiveSheet();
-    const data = sheet.getDataRange().getValues();
-    
-    // Get tomorrow's date at midnight for comparison
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(0, 0, 0, 0);
-    
-    // Skip header row if exists
-    const startRow = data[0][0] === 'URL' ? 1 : 0;
-    
-    // Check each coupon
-    for (let i = startRow; i < data.length; i++) {
-      const row = data[i];
-      const [
-        couponUrl,
-        serviceType,
-        discount,
-        expiryDateStr,
-        uses,
-        remainingUses,
-        status,
-        email,
-        phone
-      ] = row;
-      
-      // Convert expiry date string to Date object for comparison
-      const expiryDate = new Date(expiryDateStr);
-      expiryDate.setHours(0, 0, 0, 0);
-      
-      // Check if coupon expires tomorrow AND is active AND has remaining uses
-      if (expiryDate.getTime() === tomorrow.getTime() &&
-          status === 'Active' &&
-          (uses === 'unlimited' || parseInt(remainingUses) > 0)) {
+    def forward(self, x):
+        x = torch.clamp(x, -1, 1)
+        x = torch.nan_to_num(x, 0.0)
+        features = self.encoder(x)
+        transformed = self.transformer(features)
+        output = self.decoder(transformed)
+        output = torch.clamp(output + 0.1 * x, -1, 1)
+        mask, seg_features = self.segmentation(x)
+        return output, mask, seg_features
+class CatalystDiscriminator(nn.Module):
+    def __init__(self, channels=1):
+        super(CatalystDiscriminator, self).__init__()
         
-        Logger.log(`Sending reminder for coupon expiring tomorrow: ${couponUrl}`);
-        Logger.log(`Status: ${status}, Uses: ${uses}, Remaining: ${remainingUses}`);
+        # Main discriminator path
+        self.initial = nn.Sequential(
+            nn.Conv2d(channels, 64, 4, 2, 1),
+            nn.LeakyReLU(0.2, True)
+        )
         
-        // Send email reminder
-        const emailSubject = '⚠️ Your Coupon Expires Tomorrow!';
-        const emailBody = `
-Important Reminder: Your ${serviceType} coupon for ${discount}% off expires tomorrow at midnight.
-
-Coupon Details:
-- Service: ${serviceType}
-- Discount: ${discount}%
-- Remaining uses: ${uses === 'unlimited' ? 'Unlimited' : remainingUses}
-- Expiry: ${expiryDateStr} at midnight
-
-Don't wait! Use your coupon before it expires: ${couponUrl}
-
-Make sure to use it before midnight tomorrow to not miss out on your savings!`;
-
-        try {
-          sendEmailShare(email, couponUrl);
-          Logger.log(`Email reminder sent to ${email}`);
-        } catch (emailError) {
-          Logger.log(`Error sending email: ${emailError}`);
-        }
+        self.middle = nn.Sequential(
+            nn.Conv2d(64, 128, 4, 2, 1),
+            nn.InstanceNorm2d(128),
+            nn.LeakyReLU(0.2, True),
+            
+            nn.Conv2d(128, 256, 4, 2, 1),
+            nn.InstanceNorm2d(256),
+            nn.LeakyReLU(0.2, True)
+        )
         
-        // Send SMS reminder if phone number exists
-        if (phone) {
-          try {
-            const smsMessage = `Reminder: Your ${serviceType} coupon for ${discount}% off expires tomorrow at midnight! Use it before it expires: ${couponUrl}`;
-            sendSMSShare(phone, couponUrl);
-            Logger.log(`SMS reminder sent to ${phone}`);
-          } catch (smsError) {
-            Logger.log(`Error sending SMS: ${smsError}`);
-          }
-        }
-      }
-    }
-  } catch (error) {
-    Logger.log(`Error in sendExpiryReminder: ${error}`);
-  }
-}
+        self.attention = AttentionBlock(256)
+        
+        self.final = nn.Sequential(
+            nn.Conv2d(256, 512, 4, 1, 1),
+            nn.InstanceNorm2d(512),
+            nn.LeakyReLU(0.2, True),
+            nn.Conv2d(512, 1, 4, 1, 1)
+        )
+        
+        # Catalyst detection branch
+        self.catalyst_detector = nn.Sequential(
+            nn.Conv2d(256, 128, 3, 1, 1),
+            nn.InstanceNorm2d(128),
+            nn.LeakyReLU(0.2, True),
+            nn.Conv2d(128, 1, 3, 1, 1),
+            nn.Sigmoid()
+        )
+        
+    def forward(self, x):
+        # Initial layers
+        x = self.initial(x)
+        x = self.middle(x)
+        
+        # Store features after middle layers for catalyst detection
+        features = x
+        
+        # Continue with main discriminator path
+        x = self.attention(x)
+        x = self.final(x)
+        
+        # Generate catalyst mask from stored features
+        catalyst_mask = self.catalyst_detector(features)
+        
+        return x, catalyst_mask
 
-// Function to create trigger for 7:00 AM EST check
-function setupExpiryCheck() {
-  // Delete any existing triggers first
-  const triggers = ScriptApp.getProjectTriggers();
-  triggers.forEach(trigger => {
-    if (trigger.getHandlerFunction() === 'sendExpiryReminder') {
-      ScriptApp.deleteTrigger(trigger);
-    }
-  });
-  
-  // Create new trigger to run at 7:00 AM EST
-  ScriptApp.newTrigger('sendExpiryReminder')
-    .timeBased()
-    .everyDays(1)
-    .atHour(7)
-    .inTimezone('America/New_York')
-    .create();
+class PerceptualNetwork(nn.Module):
+    def __init__(self):
+        super(PerceptualNetwork, self).__init__()
+        vgg = models.vgg16(pretrained=True)
+        self.blocks = nn.ModuleList([
+            vgg.features[:4],
+            vgg.features[4:9],
+            vgg.features[9:16]
+        ])
+        for parameter in self.parameters():
+            parameter.requires_grad = False
+
+    def forward(self, x):
+        x = x.repeat(1, 3, 1, 1)  # Convert grayscale to 3 channels
+        features = []
+        for block in self.blocks:
+            x = block(x)
+            features.append(x)
+        return features
+
+class CatalystRemovalLoss(nn.Module):
+    def __init__(self):
+        super(CatalystRemovalLoss, self).__init__()
+
+    def forward(self, generated_image, catalyst_mask):
+        bright_regions = torch.where(generated_image > 0.8, 1.0, 0.0)
+        return torch.mean(bright_regions * catalyst_mask)
+
+class PerceptualLoss(nn.Module):
+    def __init__(self):
+        super(PerceptualLoss, self).__init__()
+        self.perceptual_net = PerceptualNetwork().cuda() if torch.cuda.is_available() else PerceptualNetwork()
+
+    def forward(self, real, fake):
+        real_features = self.perceptual_net(real)
+        fake_features = self.perceptual_net(fake)
+        loss = 0
+        for rf, ff in zip(real_features, fake_features):
+            loss += F.mse_loss(ff, rf)
+        return loss
+
+def train_enhanced_cycada(zip_path, drive_path, num_epochs=200, batch_size=1):
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-  Logger.log('Daily expiry check trigger created for 7:00 AM EST');
-}
+    # Initialize networks
+    G_c2b = EnhancedGenerator().to(device)
+    G_b2c = EnhancedGenerator().to(device)
+    D_catalyst = CatalystDiscriminator().to(device)
+    D_bare = CatalystDiscriminator().to(device)
+    
+    # Initialize loss functions
+    perceptual_loss = PerceptualLoss().to(device)
+    catalyst_removal_loss = CatalystRemovalLoss().to(device)
+    
+    # Create dataset and dataloader
+    dataset = CarbonCatalystDataset(load_images_from_zip(zip_path))
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    
+    # Optimizers
+    optimizer_G = torch.optim.Adam(
+        list(G_c2b.parameters()) + list(G_b2c.parameters()),
+        lr=0.0002, betas=(0.5, 0.999)
+    )
+    optimizer_D = torch.optim.Adam(
+        list(D_catalyst.parameters()) + list(D_bare.parameters()),
+        lr=0.0001, betas=(0.5, 0.999)
+    )
+    
+    for epoch in range(num_epochs):
+        for i, real_catalyst in enumerate(dataloader):
+            real_catalyst = real_catalyst.to(device)
+            
+            # Generate translations
+            fake_bare, fake_mask, _ = G_c2b(real_catalyst)
+            recovered_catalyst, rec_mask, _ = G_b2c(fake_bare)
+            
+            # Calculate losses
+            cycle_loss = F.l1_loss(recovered_catalyst, real_catalyst)
+            p_loss = perceptual_loss(real_catalyst, recovered_catalyst)
+            removal_loss = catalyst_removal_loss(fake_bare, fake_mask)
+            
+            # Adversarial losses
+            d_fake_bare, fake_bare_mask = D_bare(fake_bare)
+            d_rec_catalyst, rec_catalyst_mask = D_catalyst(recovered_catalyst)
+            
+            loss_G_adv = (
+                F.mse_loss(d_fake_bare, torch.ones_like(d_fake_bare)) +
+                F.mse_loss(d_rec_catalyst, torch.ones_like(d_rec_catalyst))
+            )
+            
+            # Combined generator loss
+            loss_G = (
+                8.0 * cycle_loss +
+                5.0 * p_loss +
+                20.0 * removal_loss +
+                1.0 * loss_G_adv
+            )
+            
+            # Update generators
+            optimizer_G.zero_grad()
+            loss_G.backward()
+            optimizer_G.step()
+            
+            # Update discriminators
+            optimizer_D.zero_grad()
+            d_real_catalyst, real_catalyst_mask = D_catalyst(real_catalyst)
+            
+            loss_D = (
+                F.mse_loss(d_real_catalyst, torch.ones_like(d_real_catalyst)) +
+                F.mse_loss(d_rec_catalyst.detach(), torch.zeros_like(d_rec_catalyst)) +
+                F.mse_loss(d_fake_bare.detach(), torch.zeros_like(d_fake_bare))
+            ) * 0.5
+            
+            loss_D.backward()
+            optimizer_D.step()
+            
+            if i % 100 == 0:
+                print(f'Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(dataloader)}]')
+                print(f'Losses - G: {loss_G.item():.4f}, D: {loss_D.item():.4f}')
+                print(f'Components - Cycle: {cycle_loss.item():.4f}, '
+                      f'Perceptual: {p_loss.item():.4f}, Removal: {removal_loss.item():.4f}')
+        
+        if (epoch + 1) % 5 == 0:
+            save_and_visualize_results(epoch, real_catalyst, G_c2b, G_b2c, device, drive_path)
+            save_models(epoch, G_c2b, G_b2c, drive_path)
 
+    return G_c2b, G_b2c
+    
+  # Dataset and visualization functions
+def load_images_from_zip(zip_path, image_size=256):
+    transform = transforms.Compose([
+        transforms.Lambda(lambda img: img.crop((0, 0, img.size[0], int(img.size[1] * 0.9)))),
+        transforms.Resize(image_size),
+        transforms.CenterCrop(image_size),
+        transforms.ToTensor(),
+        transforms.Lambda(lambda x: torch.clamp(x, 0, 1)),
+        transforms.Normalize(mean=[0.5], std=[0.5]),
+        transforms.Lambda(lambda x: torch.clamp(x, -1, 1))
+    ])
+
+    images = []
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        for filename in zip_ref.namelist():
+            if filename.lower().endswith(('.tiff', '.tif')):
+                with zip_ref.open(filename) as file:
+                    img = Image.open(file).convert('L')
+                    if len(images) == 0:  # Preview first image
+                        plt.figure(figsize=(10, 5))
+                        plt.subplot(1, 2, 1)
+                        plt.imshow(img, cmap='gray')
+                        plt.title('Original Image')
+                        
+                        cropped = img.crop((0, 0, img.size[0], int(img.size[1] * 0.9)))
+                        plt.subplot(1, 2, 2)
+                        plt.imshow(cropped, cmap='gray')
+                        plt.title('Cropped Image')
+                        plt.show()
+                    
+                    img_tensor = transform(img)
+                    images.append(img_tensor)
+
+    return torch.stack(images)
+class CarbonCatalystDataset(Dataset):
+    def __init__(self, images):
+        self.images = images
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+        return self.images[idx]
+
+def save_and_visualize_results(epoch, sample_catalyst, G_c2b, G_b2c, device, drive_path):
+    os.makedirs(drive_path, exist_ok=True)
+
+    with torch.no_grad():
+        fake_bare, fake_mask, _ = G_c2b(sample_catalyst)
+        recovered_catalyst, rec_mask, _ = G_b2c(fake_bare)
+
+        def denorm(x):
+            return (x + 1) / 2
+
+        # Create visualization
+        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+
+        # Original and reconstructions
+        axes[0,0].imshow(denorm(sample_catalyst[0,0]).cpu().numpy(), cmap='gray')
+        axes[0,0].set_title('Original (with catalyst)')
+        axes[0,0].axis('off')
+
+        axes[0,1].imshow(denorm(fake_bare[0,0]).cpu().numpy(), cmap='gray')
+        axes[0,1].set_title('Predicted (without catalyst)')
+        axes[0,1].axis('off')
+
+        axes[0,2].imshow(denorm(recovered_catalyst[0,0]).cpu().numpy(), cmap='gray')
+        axes[0,2].set_title('Recovered (with catalyst)')
+        axes[0,2].axis('off')
+
+        # Segmentation masks
+        axes[1,0].imshow(fake_mask[0,0].cpu().numpy(), cmap='hot')
+        axes[1,0].set_title('Catalyst Mask (Original)')
+        axes[1,0].axis('off')
+
+        axes[1,1].imshow(rec_mask[0,0].cpu().numpy(), cmap='hot')
+        axes[1,1].set_title('Catalyst Mask (Recovered)')
+        axes[1,1].axis('off')
+
+        # Difference map
+        diff = torch.abs(sample_catalyst - recovered_catalyst)
+        axes[1,2].imshow(denorm(diff[0,0]).cpu().numpy(), cmap='hot')
+        axes[1,2].set_title('Difference Map')
+        axes[1,2].axis('off')
+
+        plt.tight_layout()
+        save_path = os.path.join(drive_path, f'transformation_epoch_{epoch+1}.png')
+        plt.savefig(save_path)
+        plt.close()
+
+def save_models(epoch, G_c2b, G_b2c, drive_path):
+    models_path = os.path.join(drive_path, 'models')
+    os.makedirs(models_path, exist_ok=True)
+
+    torch.save({
+        'epoch': epoch,
+        'G_c2b_state_dict': G_c2b.state_dict(),
+        'G_b2c_state_dict': G_b2c.state_dict(),
+    }, os.path.join(models_path, f'generators_epoch_{epoch+1}.pth'))
+
+def preview_random_images(images, num_samples=3):
+    plt.figure(figsize=(15, 5))
+    indices = random.sample(range(len(images)), min(num_samples, len(images)))
+
+    for i, idx in enumerate(indices):
+        plt.subplot(1, num_samples, i+1)
+        plt.imshow(images[idx][0].numpy(), cmap='gray')
+        plt.title(f'Image {idx}')
+        plt.axis('off')
+
+    plt.tight_layout()
+    plt.show()
+
+# Main execution
+if __name__ == "__main__":
+    # Set your paths here
+    ZIP_PATH = '/content/drive/MyDrive/Harikrishna_Images/jsn_zip.zip'
+    DRIVE_PATH = '/content/drive/MyDrive/Harikrishna_Images/carbon_catalyst_results_4' 
+    
+    # Mount Google Drive if using Colab
+    from google.colab import drive
+    drive.mount('/content/drive')
+    
+    # Set random seed for reproducibility
+    torch.manual_seed(42)
+    random.seed(42)
+    
+    # Preview data before training
+    print("Loading and previewing data...")
+    images = load_images_from_zip(ZIP_PATH)
+    print(f"Loaded {len(images)} images")
+    preview_random_images(images)
+    
+    # Create dataset and dataloader
+    dataset = CarbonCatalystDataset(images)
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
+    
+    # Start training
+    print("Starting training...")
+    G_c2b, G_b2c = train_enhanced_cycada(ZIP_PATH, DRIVE_PATH)
+    
+    print("Training completed!")
