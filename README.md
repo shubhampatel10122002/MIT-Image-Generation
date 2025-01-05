@@ -1,4 +1,4 @@
-# MIT-Image-Generation ( Ju Ni Group )
+# MIT-Image-Generation (Ju Li Group)
 Harikrishna Maharaj ni jai
 ## Research Question
 The research question we are addressing: How many images are sufficient to fully represent a material sample? 
